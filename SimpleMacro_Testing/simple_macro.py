@@ -236,6 +236,14 @@ class SimpleMacroGUI:
             command=self._open_settings
         )
         self.settings_btn.pack(side="left", padx=5)
+
+        # Guide button - opens comprehensive help
+        self.guide_btn = ttk.Button(
+            button_frame2,
+            text="📘 Guide",
+            command=self._open_guide
+        )
+        self.guide_btn.pack(side="left", padx=5)
         
         # Action buttons frame
         action_frame = ttk.Frame(main_frame)
@@ -1337,6 +1345,92 @@ class SimpleMacroGUI:
     def _apply_theme(self, theme_name):
         """Apply a theme to the application"""
         self.current_theme = theme_name
+
+    def _open_guide(self):
+        """Open a comprehensive user guide in a dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Simple Macro — Guide")
+        dialog.geometry("700x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, font=("Arial", 10))
+        text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        guide = (
+            "Simple Macro — User Guide\n"
+            "\n"
+            "Welcome:\n"
+            "- This guide explains how to use Simple Macro to automate repetitive tasks safely and reliably.\n"
+            "- Read each section and try small, simple macros first.\n"
+            "\n"
+            "Getting Started:\n"
+            "- Add a new step with '➕ New Step'. Most users start with simple clicks and short delays (0.2–1.0s).\n"
+            "- Use '📍 Select Coordinates' to pick precise screen positions. The picker shows live screen coordinates.\n"
+            "- Save macros with '💾 Save' and load them with '📂 Load'. Saved files are standard JSON and can be shared.\n"
+            "\n"
+            "Core Concepts (Steps & Playback):\n"
+            "- Steps are executed in order. Each step supports a small delay after it finishes — use this to wait for UI updates.\n"
+            "- Step types: Click (single/multiple clicks), Hold (press-and-hold for seconds), Type (send text), Scroll, and Image Search (wait for image).\n"
+            "- Global playback options (Settings) control loop count and overall speed. Per-step loop and speed let you fine-tune repeats and timing.\n"
+            "\n"
+            "QuickRec (Recording):\n"
+            "- Press the record hotkey (default F7) once to start QuickRec and press it again to stop. QuickRec captures mouse and keyboard events.\n"
+            "- The recorder ignores interactions inside the app to avoid recording control clicks.\n"
+            "- After recording, review the converted steps and edit any coordinates, delays, or key names before saving.\n"
+            "\n"
+            "Image Search Steps (Wait-for-Image):\n"
+            "- Use Image Search when you need the macro to wait for a visual element (button, icon, or item) to appear.\n"
+            "- Capture a clear, tightly-cropped sample of the element and save it to your Images folder (Manage Items helps with this).\n"
+            "- Confidence: Try 0.80 first. If the macro misses matches, lower the confidence slightly (e.g., 0.75). If there are false matches, raise it.\n"
+            "- Timeout: Use a finite timeout (e.g., 10–30s) for predictable behavior. 0 = wait forever, which may hang your macro.\n"
+            "- Click options: configure whether the macro should click the found location and how many times. Use small click counts (1–3) to be safe.\n"
+            "\n"
+            "Item Detection & Notifications (For Users):\n"
+            "- Item Detection runs in the background and watches for images you add in Manage Items. When an item is detected, the app can send a notification (Discord webhook) with a screenshot.\n"
+            "- To enable notifications: open Settings → Item Detection, set the webhook URL, and enable item webhook notifications.\n"
+            "- Mentioning a user: to actually ping someone on Discord, enter their numeric Discord user ID (a long number) in the "
+            "Mention username" " field and enable the Mention option. The app sends the mention as <@USER_ID> with proper allowed_mentions so the ping works.\n"
+            "  - If you don't know the numeric ID: ask the person to enable Developer Mode in Discord (User Settings → Advanced), then right-click their name and choose 'Copy ID'.\n"
+            "\n"
+            "Loop Notifications (User-friendly):\n"
+            "- If "
+            "Send webhook after each loop" " is enabled, the app will send a short summary and a screenshot when a full playback loop finishes.\n"
+            "- Use this for long-running macros so you can be alerted when cycles complete.\n"
+            "\n"
+            "Safe Usage & Best Practices:\n"
+            "- Test macros on a small scale before running large loops — use 1–3 loops and watch the result.\n"
+            "- Avoid running macros while other critical applications are active (banking, video calls, games that prohibit automation).\n"
+            "- If a macro interacts with sensitive UI (financial, personal), run it manually or add extra confirmation steps.\n"
+            "- Prefer coordinates anchored to stable UI elements (e.g., images) rather than absolute screen positions if you use multiple monitors or change resolution.\n"
+            "\n"
+            "Troubleshooting (User-focused):\n"
+            "- If the macro clicks the wrong place: re-capture the coordinate with the picker and increase delay after the step.\n"
+            "- If Image Search never finds the target: capture a clearer sample, increase confidence tolerance, or broaden the search area.\n"
+            "- If notifications don't arrive: check your webhook URL (no extra spaces), ensure the receiving service is online, and verify any Discord roles/permissions.\n"
+            "- If the app cannot capture the screen on Windows: make sure any privacy settings (Windows 10/11) allow screen capture for desktop apps.\n"
+            "\n"
+            "Examples (Simple Macros):\n"
+            "- Example 1 — Click a button every 10 seconds (3 times): New Step: Click at target coordinates → Delay 10.0 → Set loop count 3.\n"
+            "- Example 2 — Wait for a 'Ready' image then click: Add Image Search step with small crop of 'Ready' indicator, confidence 0.85, timeout 20s, Click when found.\n"
+            "- Example 3 — Type text into a field: Add Step → Type → text: 'Hello, world!' → Delay 0.5.\n"
+            "\n"
+            "Advanced Tips (User-level, optional):\n"
+            "- Use per-step speed multipliers for tiny timing tweaks instead of changing the global speed.\n"
+            "- Use per-step loops to repeat a subset of steps without looping the whole macro.\n"
+            "- Keep images for Image Search in the Images/Items folder so they are easy to manage.\n"
+            "\n"
+            "Where to get help:\n"
+            "- Use the Logs tab to see what the app is doing; it helps diagnose missed clicks or failed searches.\n"
+            "- If you need more help, export your macro (Save) and share it with a support contact along with a short description of what went wrong.\n"
+            "\n"
+            "Final Notes:\n"
+            "- Start small, iterate, and keep backups of macros you care about.\n"
+            "- The app is intended to help automate routine tasks — keep safety and privacy in mind.\n"
+        )
+
+        text.insert("1.0", guide)
+        text.config(state=tk.DISABLED)
         
         # Theme color definitions
         themes = {
