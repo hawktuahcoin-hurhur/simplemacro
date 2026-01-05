@@ -52,48 +52,68 @@ class SimpleMacroGUI:
         self.playback_speed = 1.0
         self.loop_count = 1  # 0 = infinite
         self.stop_playback = False
-            """Load macro from a user-chosen file (JSON or TXT)."""
-            fn = filedialog.askopenfilename(
-                title='Open Macro',
-                defaultextension='.json',
-                filetypes=[('JSON files', '*.json'), ('Text files', '*.txt'), ('All files', '*.*')]
-            )
+        
+        # Controllers for playback
+        self.keyboard_controller = KeyboardController()
+        self.mouse_controller = MouseController()
+        
+        # Recording state
+        self.recording = False
+        self.recorded_events = []
+        self.record_start_time = None
+        self.mouse_listener = None
+        self.keyboard_listener = None
+        
+        # Hotkey settings
+        self.play_hotkey = "F6"
+        self.record_hotkey = "F7"
+        self.hotkey_listener = None
 
-            if not fn:
-                return
+        # Discord webhook settings (empty by default)
+        self.discord_webhook_url = ""
+        self.discord_webhook_enabled = False
+        # Item detection settings
+        self.item_detection_items = []  # list of {'image_path','name','confidence','enabled','last_detected'}
+        self.item_webhook_url = ""
+        self.item_webhook_enabled = False
+        # Item webhook mention settings
+        self.item_webhook_mention_enabled = False
+        self.item_webhook_mention_user = ""
+        
+        self._setup_ui()
+        self._start_hotkey_listener()
+        # Quick recorder state (replaces TinyRec)
+        self.quickrec_active = False
+        self._start_item_detector()
+    
+    def _setup_ui(self):
+        """Setup the user interface"""
+        # Title
+        title_frame = ttk.Frame(self.root, padding=10)
+        title_frame.pack(fill="x")
+        
+        title_label = ttk.Label(
+            title_frame, 
+            text="Simple Macro",
+            font=("Arial", 16, "bold")
+        )
+        title_label.pack()
+        
+        author_label = ttk.Label(
+            title_frame,
+            text="By Ryan",
+            font=("Arial", 9, "italic")
+        )
+        author_label.pack()
+        
+        # Main container
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Steps display area with Logs tab
+        steps_label = ttk.Label(main_frame, text="Macro Steps:", font=("Arial", 12, "bold"))
+        steps_label.pack(anchor="w", pady=(0, 5))
 
-            try:
-                with open(fn, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    steps = data.get('steps', [])
-
-                # Reconcile image_search steps by image_hash (match by pixels)
-                for s in steps:
-                    try:
-                        if s.get('action') == 'image_search':
-                            img_path = s.get('image_path')
-                            img_hash = s.get('image_hash')
-                            resolved = None
-                            if img_path:
-                                p = Path(img_path)
-                                if p.exists():
-                                    if not img_hash:
-                                        s['image_hash'] = self._compute_image_hash(p)
-                                    resolved = p
-                            if not resolved and img_hash:
-                                found = self._find_image_by_hash(img_hash)
-                                if found:
-                                    s['image_path'] = str(found)
-                                    s['image_name'] = found.name
-                                    resolved = found
-                    except Exception:
-                        pass
-
-                self.steps = steps
-                self._update_steps_display()
-                messagebox.showinfo('Success', f"Loaded macro: {Path(fn).name}")
-            except Exception as e:
-                messagebox.showerror('Error', f'Failed to load macro: {e}')
         # Notebook for Steps / Logs
         steps_notebook = ttk.Notebook(main_frame)
         steps_notebook.pack(fill="both", expand=True, pady=(0, 10))
@@ -121,8 +141,7 @@ class SimpleMacroGUI:
             yscrollcommand=scrollbar_y.set,
             xscrollcommand=scrollbar_x.set,
             height=15,
-            selectmode=tk.EXTENDED,  # Enable multi-select with Ctrl/Shift
-            exportselection=False  # Preserve selection when focus moves to other widgets
+            selectmode=tk.EXTENDED  # Enable multi-select with Ctrl/Shift
         )
         self.steps_listbox.pack(side="left", fill="both", expand=True)
         scrollbar_y.config(command=self.steps_listbox.yview)
@@ -827,8 +846,11 @@ class SimpleMacroGUI:
     
     def _set_selected_loops(self):
         """Set loop count for all selected steps (supports multi-select)"""
-        # Note: fetch selection when the user applies, not when dialog opens,
-        # to avoid issues where clicking into dialog controls can change focus.
+        # Capture selection indices immediately so they don't get lost when the dialog gains focus
+        selection = list(self.steps_listbox.curselection())
+        if not selection:
+            messagebox.showwarning("Warning", "Please select one or more steps!")
+            return
         
         dialog = tk.Toplevel(self.root)
         dialog.title("Set Loop Count")
@@ -859,16 +881,11 @@ class SimpleMacroGUI:
         loop_spinner.pack(anchor="w", pady=5)
         
         def apply_loop():
-            current_selection = self.steps_listbox.curselection()
-            if not current_selection:
-                messagebox.showwarning("Warning", "Please select one or more steps!")
-                return
             new_loop = loop_var.get()
-            for idx in current_selection:
-                try:
-                    self.steps[int(idx)]['step_loop'] = int(new_loop)
-                except Exception:
-                    pass
+            for idx in selection:
+                # Validate index still in range
+                if 0 <= idx < len(self.steps):
+                    self.steps[idx]['step_loop'] = new_loop
             self._update_steps_display()
             dialog.destroy()
         
@@ -2491,47 +2508,46 @@ class SimpleMacroGUI:
                 
                 # Look for the release to determine hold duration
                 release_event = None
-                release_index = None
                 for j in range(i + 1, len(events)):
-                    if events[j]['type'] == 'key_release' and events[j].get('key') == key:
+                    if events[j]['type'] == 'key_release' and events[j]['key'] == key:
                         release_event = events[j]
-                        release_index = j
                         break
+                    # After searching, handle whether a release was found
+                    if release_event:
+                        hold_duration = release_event['timestamp'] - event['timestamp']
 
-                if release_event is not None:
-                    hold_duration = release_event['timestamp'] - event['timestamp']
-                    if hold_duration > 0.3:  # Considered a hold
-                        step_item = {
-                            'action': 'hold',
-                            'key': key,
-                            'amount': round(hold_duration, 2),
-                            'delay': delay
-                        }
+                        if hold_duration > 0.3:  # Considered a hold
+                            step_item = {
+                                'action': 'hold',
+                                'key': key,
+                                'amount': round(hold_duration, 2),
+                                'delay': delay
+                            }
+                        else:
+                            step_item = {
+                                'action': 'click',
+                                'key': key,
+                                'amount': 1,
+                                'delay': delay
+                            }
+                        new_steps.append(step_item)
+                        try:
+                            self._log(f"Converted event -> step: {step_item}")
+                        except Exception:
+                            pass
                     else:
+                        # No release found, just a click
                         step_item = {
                             'action': 'click',
                             'key': key,
                             'amount': 1,
                             'delay': delay
                         }
-                    new_steps.append(step_item)
-                    try:
-                        self._log(f"Converted event -> step: {step_item}")
-                    except Exception:
-                        pass
-                else:
-                    # No release found, just a click
-                    step_item = {
-                        'action': 'click',
-                        'key': key,
-                        'amount': 1,
-                        'delay': delay
-                    }
-                    new_steps.append(step_item)
-                    try:
-                        self._log(f"Converted event -> step: {step_item}")
-                    except Exception:
-                        pass
+                        new_steps.append(step_item)
+                        try:
+                            self._log(f"Converted event -> step: {step_item}")
+                        except Exception:
+                            pass
                 
                 last_timestamp = event['timestamp']
             
@@ -2582,50 +2598,15 @@ class SimpleMacroGUI:
         self.steps.extend(new_steps)
 
     def _save_macro(self):
-        """Save macro to a file chosen by the user (JSON)."""
+        """Save macro to file"""
         if not self.steps:
             messagebox.showwarning("Warning", "No steps to save!")
             return
-
-        # Ensure image_search steps include image_hash before saving
-        for s in self.steps:
-            try:
-                if s.get('action') == 'image_search':
-                    if not s.get('image_hash') and s.get('image_path'):
-                        s['image_hash'] = self._compute_image_hash(s['image_path'])
-            except Exception:
-                pass
-
-        # Prompt user to choose a save location
-        fn = filedialog.asksaveasfilename(
-            title='Save Macro As',
-            defaultextension='.json',
-            filetypes=[('JSON files', '*.json'), ('Text files', '*.txt'), ('All files', '*.*')]
-        )
-
-        if not fn:
-            return
-
-        try:
-            with open(fn, 'w', encoding='utf-8') as f:
-                json.dump({'name': Path(fn).stem, 'steps': self.steps}, f, indent=2)
-            messagebox.showinfo('Success', f'Macro saved to:\n{fn}')
-            self.status_label.config(text=f'Saved: {Path(fn).name}')
-        except Exception as e:
-            messagebox.showerror('Error', f'Failed to save macro: {e}')
-    
-    def _load_macro(self):
-        """Load macro from file"""
-        # List available macros
-        macro_files = list(self.recordings_folder.glob("*.txt"))
         
-        if not macro_files:
-            messagebox.showinfo("Info", "No saved macros found!")
-            return
-        
+        # Create save dialog
         dialog = tk.Toplevel(self.root)
-        dialog.title("Load Macro")
-        dialog.geometry("400x350")
+        dialog.title("Save Macro")
+        dialog.geometry("400x180")
         dialog.transient(self.root)
         dialog.grab_set()
         if self.always_on_top:
@@ -2637,36 +2618,66 @@ class SimpleMacroGUI:
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f"+{x}+{y}")
         
-        frame = ttk.Frame(dialog, padding=20)
+        frame = ttk.Frame(dialog, padding=25)
         frame.pack(fill="both", expand=True)
         
-        ttk.Label(frame, text="Select Macro:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+        ttk.Label(frame, text="Macro Name:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
         
-        # Listbox with scrollbar
-        list_frame = ttk.Frame(frame)
-        list_frame.pack(fill="both", expand=True, pady=(0, 15))
+        name_var = tk.StringVar(value="my_macro")
+        name_entry = ttk.Entry(frame, textvariable=name_var, font=("Arial", 10), width=30)
+        name_entry.pack(anchor="w", pady=(0, 20))
         
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
-        scrollbar.pack(side="right", fill="y")
-        
-        listbox = tk.Listbox(list_frame, font=("Arial", 10), height=10, yscrollcommand=scrollbar.set)
-        listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=listbox.yview)
-        
-        for macro_file in macro_files:
-            listbox.insert(tk.END, macro_file.name)
-        
-        def load():
-            selection = listbox.curselection()
-            if not selection:
-                messagebox.showwarning("Warning", "Please select a macro!")
+        def save():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showerror("Error", "Please enter a name!")
                 return
-            
-            filename = macro_files[selection[0]]
-            
-            with open(filename, 'r') as f:
+            # Ask user where to save the macro (allow .txt/.json)
+            # Ensure image_search steps include image_hash before saving
+            for s in self.steps:
+                try:
+                    if s.get('action') == 'image_search':
+                        if not s.get('image_hash') and s.get('image_path'):
+                            s['image_hash'] = self._compute_image_hash(s['image_path'])
+                except Exception:
+                    pass
+
+            default_name = f"{name}.txt"
+            path = filedialog.asksaveasfilename(title="Save Macro As",
+                                                initialdir=str(self.recordings_folder),
+                                                initialfile=default_name,
+                                                defaultextension='.txt',
+                                                filetypes=[('Macro JSON', '*.txt'), ('JSON', '*.json')])
+            if not path:
+                return
+
+            try:
+                with open(path, 'w') as f:
+                    json.dump({'name': name, 'steps': self.steps}, f, indent=2)
+                messagebox.showinfo("Success", f"Macro saved to:\n{path}")
+                self.status_label.config(text=f"Saved: {Path(path).name}")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save macro: {e}")
+        
+        button_frame = ttk.Frame(frame)
+        button_frame.pack()
+        
+        ttk.Button(button_frame, text="Save", command=save).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=5)
+    
+    def _load_macro(self):
+        """Load macro from file (user picks a file)."""
+        path = filedialog.askopenfilename(title="Open Macro",
+                                          initialdir=str(self.recordings_folder),
+                                          filetypes=[('Macro JSON', '*.txt'), ('JSON', '*.json'), ('All files', '*.*')])
+        if not path:
+            return
+
+        try:
+            with open(path, 'r') as f:
                 data = json.load(f)
-                steps = data['steps']
+                steps = data.get('steps', [])
 
             # After loading, reconcile image_search steps by image_hash (match by pixels)
             for s in steps:
@@ -2690,21 +2701,14 @@ class SimpleMacroGUI:
                                 s['image_path'] = str(found)
                                 s['image_name'] = found.name
                                 resolved = found
-
                 except Exception:
                     pass
 
             self.steps = steps
-            
             self._update_steps_display()
-            messagebox.showinfo("Success", f"Loaded macro: {data['name']}")
-            dialog.destroy()
-        
-        button_frame = ttk.Frame(frame)
-        button_frame.pack()
-        
-        ttk.Button(button_frame, text="Load", command=load).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=5)
+            messagebox.showinfo("Success", f"Loaded macro: {data.get('name', Path(path).name)}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load macro: {e}")
     
     def _play_macro(self):
         """Play the macro"""
