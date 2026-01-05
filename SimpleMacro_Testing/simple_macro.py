@@ -19,6 +19,7 @@ from pynput.keyboard import Controller as KeyboardController, Key, Listener as K
 from pynput.mouse import Controller as MouseController, Button, Listener as MouseListener
 import requests
 import io
+import hashlib
 
 
 class SimpleMacroGUI:
@@ -1587,6 +1588,46 @@ class SimpleMacroGUI:
             except Exception:
                 pass
 
+    def _compute_image_hash(self, path_or_bytes):
+        """Compute SHA256 hash for a file path or bytes-like object.
+
+        Returns hex digest string or None on error.
+        """
+        try:
+            if isinstance(path_or_bytes, (bytes, bytearray)):
+                data = path_or_bytes
+            else:
+                p = Path(str(path_or_bytes))
+                if not p.exists():
+                    return None
+                with open(p, 'rb') as f:
+                    data = f.read()
+            h = hashlib.sha256()
+            h.update(data)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    def _find_image_by_hash(self, img_hash):
+        """Search `self.images_folder` recursively for a file whose SHA256 hash matches `img_hash`.
+
+        Returns Path or None.
+        """
+        try:
+            base = Path(self.images_folder)
+            if not base.exists():
+                return None
+            for p in base.rglob('*'):
+                if p.is_file():
+                    try:
+                        if self._compute_image_hash(p) == img_hash:
+                            return p
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return None
+
     def _open_item_manager(self):
         """Dialog to manage item detection images and names."""
         dialog = tk.Toplevel(self.root)
@@ -1638,8 +1679,10 @@ class SimpleMacroGUI:
             ttk.Entry(subdialog, textvariable=conf_var, width=10).pack(padx=10, pady=5)
 
             def save_item():
+                image_hash = self._compute_image_hash(dest)
                 self.item_detection_items.append({
                     'image_path': str(dest),
+                    'image_hash': image_hash,
                     'name': name_var.get().strip() or src.stem,
                     'confidence': float(conf_var.get()),
                     'enabled': True,
@@ -2047,6 +2090,7 @@ class SimpleMacroGUI:
                 'action': 'image_search',
                 'image_path': image_path_var.get(),
                 'image_name': image_name_var.get(),
+                'image_hash': None,
                 'confidence': conf_var.get(),
                 'click_image': click_image_var.get(),
                 'click_count': click_count_var.get(),
@@ -2068,6 +2112,13 @@ class SimpleMacroGUI:
                     messagebox.showerror("Error", "Coordinates must be numbers!")
                     return
             
+            # Compute and store image hash so saved macro matches by pixels instead of filename
+            try:
+                img_hash = self._compute_image_hash(step['image_path'])
+                step['image_hash'] = img_hash
+            except Exception:
+                step['image_hash'] = None
+
             self.steps.append(step)
             self._update_steps_display()
             dialog.destroy()
@@ -2581,6 +2632,15 @@ class SimpleMacroGUI:
             
             filename = self.recordings_folder / f"{name}.txt"
             
+            # Ensure image_search steps include image_hash before saving
+            for s in self.steps:
+                try:
+                    if s.get('action') == 'image_search':
+                        if not s.get('image_hash') and s.get('image_path'):
+                            s['image_hash'] = self._compute_image_hash(s['image_path'])
+                except Exception:
+                    pass
+
             with open(filename, 'w') as f:
                 json.dump({
                     'name': name,
@@ -2649,7 +2709,35 @@ class SimpleMacroGUI:
             
             with open(filename, 'r') as f:
                 data = json.load(f)
-                self.steps = data['steps']
+                steps = data['steps']
+
+            # After loading, reconcile image_search steps by image_hash (match by pixels)
+            for s in steps:
+                try:
+                    if s.get('action') == 'image_search':
+                        img_path = s.get('image_path')
+                        img_hash = s.get('image_hash')
+
+                        # If image file missing or hash missing, try to compute or find match
+                        resolved = None
+                        if img_path:
+                            p = Path(img_path)
+                            if p.exists():
+                                # Ensure hash is present
+                                if not img_hash:
+                                    s['image_hash'] = self._compute_image_hash(p)
+                                resolved = p
+                        if not resolved and img_hash:
+                            found = self._find_image_by_hash(img_hash)
+                            if found:
+                                s['image_path'] = str(found)
+                                s['image_name'] = found.name
+                                resolved = found
+
+                except Exception:
+                    pass
+
+            self.steps = steps
             
             self._update_steps_display()
             messagebox.showinfo("Success", f"Loaded macro: {data['name']}")
