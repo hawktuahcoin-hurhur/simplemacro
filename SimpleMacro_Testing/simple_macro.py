@@ -51,53 +51,79 @@ class SimpleMacroGUI:
         # Playback settings
         self.playback_speed = 1.0
         self.loop_count = 1  # 0 = infinite
-            """Load macro from a file chosen by the user."""
-            filename = filedialog.askopenfilename(
-                title='Open macro file',
-                initialdir=str(self.recordings_folder) if self.recordings_folder.exists() else str(Path.home()),
-                filetypes=[('Macro JSON', '*.txt;*.json'), ('JSON', '*.json'), ('All files', '*.*')]
+        self.stop_playback = False
+        
+            # Let the user pick any macro file from disk
+            path = filedialog.askopenfilename(
+                title='Load Macro',
+                initialdir=str(self.recordings_folder),
+                filetypes=[('Macro Files', '*.txt'), ('JSON', '*.json'), ('All Files', '*.*')]
             )
-
-            if not filename:
+            if not path:
                 return
 
-            try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    steps = data.get('steps', [])
+            with open(path, 'r') as f:
+                data = json.load(f)
+                steps = data.get('steps', [])
 
-                # After loading, reconcile image_search steps by image_hash (match by pixels)
-                for s in steps:
-                    try:
-                        if s.get('action') == 'image_search':
-                            img_path = s.get('image_path')
-                            img_hash = s.get('image_hash')
+            # After loading, reconcile image_search steps by image_hash (match by pixels)
+            for s in steps:
+                try:
+                    if s.get('action') == 'image_search':
+                        img_path = s.get('image_path')
+                        img_hash = s.get('image_hash')
 
-                            # If image file missing or hash missing, try to compute or find match
-                            resolved = None
-                            if img_path:
-                                p = Path(img_path)
-                                if p.exists():
-                                    # Ensure hash is present
-                                    if not img_hash:
-                                        s['image_hash'] = self._compute_image_hash(p)
-                                    resolved = p
-                            if not resolved and img_hash:
-                                found = self._find_image_by_hash(img_hash)
-                                if found:
-                                    s['image_path'] = str(found)
-                                    s['image_name'] = found.name
-                                    resolved = found
-                    except Exception:
-                        pass
+                        # If image file missing or hash missing, try to compute or find match
+                        resolved = None
+                        if img_path:
+                            p = Path(img_path)
+                            if p.exists():
+                                # Ensure hash is present
+                                if not img_hash:
+                                    s['image_hash'] = self._compute_image_hash(p)
+                                resolved = p
+                        if not resolved and img_hash:
+                            found = self._find_image_by_hash(img_hash)
+                            if found:
+                                s['image_path'] = str(found)
+                                s['image_name'] = found.name
+                                resolved = found
 
-                self.steps = steps
-                self._update_steps_display()
-                messagebox.showinfo('Success', f"Loaded macro: {Path(filename).stem}")
-            except Exception as e:
-                messagebox.showerror('Error', f'Failed to load macro: {e}')
+                except Exception:
+                    pass
+
+            self.steps = steps
+            self._update_steps_display()
+            messagebox.showinfo('Success', f"Loaded macro: {data.get('name', Path(path).stem)}")
+        # Notebook for Steps / Logs
+        steps_notebook = ttk.Notebook(main_frame)
+        steps_notebook.pack(fill="both", expand=True, pady=(0, 10))
+
+        steps_tab = ttk.Frame(steps_notebook)
+        logs_tab = ttk.Frame(steps_notebook)
+        steps_notebook.add(steps_tab, text="Steps")
+        steps_notebook.add(logs_tab, text="Logs")
+
+        # Steps listbox with scrollbar (inside Steps tab)
+        list_frame = ttk.Frame(steps_tab)
+        list_frame.pack(fill="both", expand=True)
+
+        # Vertical scrollbar
+        scrollbar_y = ttk.Scrollbar(list_frame, orient="vertical")
+        scrollbar_y.pack(side="right", fill="y")
+
+        # Horizontal scrollbar
+        scrollbar_x = ttk.Scrollbar(list_frame, orient="horizontal")
+        scrollbar_x.pack(side="bottom", fill="x")
+
+        self.steps_listbox = tk.Listbox(
+            list_frame,
+            font=("Courier", 10),
+            yscrollcommand=scrollbar_y.set,
+            xscrollcommand=scrollbar_x.set,
             height=15,
-            selectmode=tk.EXTENDED  # Enable multi-select with Ctrl/Shift
+            selectmode=tk.EXTENDED,  # Enable multi-select with Ctrl/Shift
+            exportselection=False
         )
         self.steps_listbox.pack(side="left", fill="both", expand=True)
         scrollbar_y.config(command=self.steps_listbox.yview)
@@ -802,12 +828,14 @@ class SimpleMacroGUI:
     
     def _set_selected_loops(self):
         """Set loop count for all selected steps (supports multi-select)"""
-        sel = self.steps_listbox.curselection()
-        selection = list(sel)
+        selection = self.steps_listbox.curselection()
         if not selection:
             messagebox.showwarning("Warning", "Please select one or more steps!")
             return
-        
+
+        # Capture selection indices now to avoid focus changes clearing selection
+        selected_indices = [int(x) for x in selection]
+
         dialog = tk.Toplevel(self.root)
         dialog.title("Set Loop Count")
         dialog.geometry("380x220")
@@ -825,17 +853,8 @@ class SimpleMacroGUI:
         frame = ttk.Frame(dialog, padding=25)
         frame.pack(fill="both", expand=True)
         
-        count_text = f"Selected: {len(selection)} step(s)"
+        count_text = f"Selected: {len(selected_indices)} step(s)"
         ttk.Label(frame, text=count_text, font=("Arial", 11, "bold")).pack(pady=(0, 20))
-        # Show brief preview of selected steps (names or indices)
-        preview_lines = []
-        for idx in selection:
-            try:
-                name = self.steps[idx].get('name', '')
-                preview_lines.append(f"{idx+1}. {name}" if name else f"{idx+1}")
-            except Exception:
-                preview_lines.append(f"{idx+1}")
-        ttk.Label(frame, text='; '.join(preview_lines), font=("Arial", 9)).pack(pady=(0, 8))
         
         ttk.Label(frame, text="Set Loop Count:", font=("Arial", 11)).pack(anchor="w")
         ttk.Label(frame, text="0 = Infinite, 1 = Run once only (per playback)", 
@@ -847,7 +866,8 @@ class SimpleMacroGUI:
         
         def apply_loop():
             new_loop = loop_var.get()
-            for idx in selection:
+            for idx in selected_indices:
+                # guard against index out of range in case steps changed
                 if 0 <= idx < len(self.steps):
                     self.steps[idx]['step_loop'] = new_loop
             self._update_steps_display()
@@ -1464,6 +1484,8 @@ class SimpleMacroGUI:
             }
         }
         
+        # Resolve theme name from current setting (fallback to dark)
+        theme_name = getattr(self, 'current_theme', 'dark')
         # Get theme colors (default to dark if not found)
         theme = themes.get(theme_name, themes["dark"])
         
@@ -2430,17 +2452,17 @@ class SimpleMacroGUI:
             if event['type'] == 'mouse_click':
                 if event['pressed']:
                     # Look for the release to determine if it's a click or hold
-                    release_index = None
+                    release_event = None
                     for j in range(i + 1, len(events)):
-                        ev = events[j]
-                        if ev['type'] == 'mouse_click' and ev.get('button') == event.get('button') and not ev.get('pressed'):
-                            release_index = j
+                        if (events[j]['type'] == 'mouse_click' and 
+                            events[j]['button'] == event['button'] and 
+                            not events[j]['pressed']):
+                            release_event = events[j]
                             break
-
-                    if release_index is not None:
-                        release_event = events[release_index]
+                    
+                    if release_event:
                         hold_duration = release_event['timestamp'] - event['timestamp']
-
+                        
                         if hold_duration > 0.3:  # Considered a hold if > 300ms
                             step_item = {
                                 'action': 'hold',
@@ -2464,41 +2486,21 @@ class SimpleMacroGUI:
                             self._log(f"Converted event -> step: {step_item}")
                         except Exception:
                             pass
-
-                        # Advance index to skip the release event we've already handled
-                        i = release_index
-                        last_timestamp = release_event['timestamp']
-                    else:
-                        # No release found; treat as single click
-                        step_item = {
-                            'action': 'click',
-                            'key': event['button'],
-                            'x': event['x'],
-                            'y': event['y'],
-                            'amount': 1,
-                            'delay': delay
-                        }
-                        new_steps.append(step_item)
-                        try:
-                            self._log(f"Converted event -> step: {step_item}")
-                        except Exception:
-                            pass
-                        last_timestamp = event['timestamp']
+                    
+                    last_timestamp = event['timestamp']
             
             elif event['type'] == 'key_press':
                 key = event['key']
 
-                # Look for the release to determine hold duration
-                release_index = None
+                # Look for a matching key_release after this press
+                release_event = None
                 for j in range(i + 1, len(events)):
-                    if events[j]['type'] == 'key_release' and events[j].get('key') == key:
-                        release_index = j
+                    if events[j]['type'] == 'key_release' and events[j]['key'] == key:
+                        release_event = events[j]
                         break
 
-                if release_index is not None:
-                    release_event = events[release_index]
+                if release_event:
                     hold_duration = release_event['timestamp'] - event['timestamp']
-
                     if hold_duration > 0.3:  # Considered a hold
                         step_item = {
                             'action': 'hold',
@@ -2518,12 +2520,8 @@ class SimpleMacroGUI:
                         self._log(f"Converted event -> step: {step_item}")
                     except Exception:
                         pass
-
-                    # Advance index to skip the release event we've handled
-                    i = release_index
-                    last_timestamp = release_event['timestamp']
                 else:
-                    # No release found, just a click
+                    # No release found, treat as a simple click
                     step_item = {
                         'action': 'click',
                         'key': key,
@@ -2536,7 +2534,7 @@ class SimpleMacroGUI:
                     except Exception:
                         pass
 
-                    last_timestamp = event['timestamp']
+                last_timestamp = event['timestamp']
             
             elif event['type'] == 'mouse_move':
                 # Group consecutive mouse moves
@@ -2585,9 +2583,19 @@ class SimpleMacroGUI:
         self.steps.extend(new_steps)
 
     def _save_macro(self):
-        """Save macro to a file chosen by the user via Save As dialog."""
+        """Save macro to file"""
         if not self.steps:
             messagebox.showwarning("Warning", "No steps to save!")
+            return
+        # Ask user for save location (Save As)
+        path = filedialog.asksaveasfilename(
+            defaultextension='.txt',
+            filetypes=[('Macro Files', '*.txt'), ('JSON', '*.json')],
+            initialdir=str(self.recordings_folder),
+            initialfile='my_macro.txt',
+            title='Save Macro As'
+        )
+        if not path:
             return
 
         # Ensure image_search steps include image_hash before saving
@@ -2599,25 +2607,15 @@ class SimpleMacroGUI:
             except Exception:
                 pass
 
-        # Ask user where to save
-        initial_dir = str(self.recordings_folder) if self.recordings_folder.exists() else str(Path.home())
-        filename = filedialog.asksaveasfilename(
-            title='Save macro as',
-            initialdir=initial_dir,
-            defaultextension='.txt',
-            filetypes=[('Macro JSON', '*.txt'), ('JSON', '*.json'), ('All files', '*.*')]
-        )
+        name = Path(path).stem
+        with open(path, 'w') as f:
+            json.dump({
+                'name': name,
+                'steps': self.steps
+            }, f, indent=2)
 
-        if not filename:
-            return
-
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump({'name': Path(filename).stem, 'steps': self.steps}, f, indent=2)
-            messagebox.showinfo('Success', f'Macro saved to:\n{filename}')
-            self.status_label.config(text=f'Saved: {Path(filename).name}')
-        except Exception as e:
-            messagebox.showerror('Error', f'Failed to save macro: {e}')
+        messagebox.showinfo('Success', f'Macro saved to:\n{path}')
+        self.status_label.config(text=f'Saved: {Path(path).name}')
     
     def _load_macro(self):
         """Load macro from file"""
