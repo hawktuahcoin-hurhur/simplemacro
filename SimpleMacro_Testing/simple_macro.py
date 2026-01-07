@@ -11,6 +11,8 @@ from tkinter import ttk, messagebox, scrolledtext, filedialog
 from pathlib import Path
 import threading
 import sv_ttk
+import platform
+import ctypes
 from PIL import Image, ImageTk, ImageDraw
 import mss
 import cv2
@@ -26,13 +28,31 @@ class SimpleMacroGUI:
     """GUI for creating and running step-based macros"""
     
     def __init__(self):
+        # Try to enable DPI awareness on Windows for consistent scaling (Win10+)
+        try:
+            if platform.system() == 'Windows':
+                # Prefer SetProcessDpiAwareness on newer systems, fallback to SetProcessDPIAware
+                try:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+                except Exception:
+                    try:
+                        ctypes.windll.user32.SetProcessDPIAware()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         self.root = tk.Tk()
         self.root.title("Simple Macro")
         self.root.geometry("900x750")
-        self.root.minsize(700, 550)  # Minimum window size
+        self.root.minsize(600, 450)  # Minimum window size (more compatible when smaller)
         
-        # Apply Sun Valley theme
-        sv_ttk.set_theme("dark")
+        # Apply Sun Valley theme with fallback for older tkinter/Tk builds (Windows 10)
+        try:
+            sv_ttk.set_theme("dark")
+        except Exception:
+            # If sv_ttk or the theme isn't supported on older systems, ignore and continue
+            pass
         
         self.steps = []
         self.playing = False
@@ -40,116 +60,96 @@ class SimpleMacroGUI:
         # Save macros to user's Documents folder
         self.recordings_folder = Path.home() / "Documents"
         
-        # Images folder for image search (in Documents)
-        self.images_folder = Path.home() / "Documents" / "SimpleMacro_Images"
-        self.images_folder.mkdir(exist_ok=True)
-        
-        # Theme settings
-        self.current_theme = "dark"
-        self.always_on_top = False
-        
-        # Playback settings
-        self.playback_speed = 1.0
-        self.loop_count = 1  # 0 = infinite
-        self.stop_playback = False
-        
-            # Let the user pick any macro file from disk
-            path = filedialog.askopenfilename(
-                title='Load Macro',
-                initialdir=str(self.recordings_folder),
-                filetypes=[('Macro Files', '*.txt'), ('JSON', '*.json'), ('All Files', '*.*')]
-            )
-            if not path:
-                return
+        guide = """
+    Simple Macro — User Guide
 
-            with open(path, 'r') as f:
-                data = json.load(f)
-                steps = data.get('steps', [])
+    Welcome
+    - Simple Macro helps automate repetitive desktop tasks. Start small and verify each macro before running large loops.
 
-            # After loading, reconcile image_search steps by image_hash (match by pixels)
-            for s in steps:
-                try:
-                    if s.get('action') == 'image_search':
-                        img_path = s.get('image_path')
-                        img_hash = s.get('image_hash')
+    Quick Start
+    - Add a step: Click ➕ New Step and choose an action (Click, Hold, Drag, Type, Scroll, Image Search).
+    - Use 📍 Select Coordinates to pick precise screen positions. The picker shows live screen coordinates and lets you draw markers.
+    - Save with 💾 Save and load with 📂 Load. Macros and images are stored in your Documents folder by default.
 
-                        # If image file missing or hash missing, try to compute or find match
-                        resolved = None
-                        if img_path:
-                            p = Path(img_path)
-                            if p.exists():
-                                # Ensure hash is present
-                                if not img_hash:
-                                    s['image_hash'] = self._compute_image_hash(p)
-                                resolved = p
-                        if not resolved and img_hash:
-                            found = self._find_image_by_hash(img_hash)
-                            if found:
-                                s['image_path'] = str(found)
-                                s['image_name'] = found.name
-                                resolved = found
+    Save Location
+    - Macros and images are saved to: C:/Users/(Your username)/Documents
+    - Images used for Image Search are placed under Documents/SimpleMacro_Images.
 
-                except Exception:
-                    pass
+    Core Concepts
+    - Steps run sequentially; each step can include a short delay to wait for UI updates.
+    - Step types:
+      • Click — single or multiple clicks at coordinates
+      • Hold — press and hold a mouse button for N seconds
+      • Drag — move mouse from start to end over a duration
+      • Type — send text input
+      • Scroll — scroll up/down at a position
+      • Image Search — wait for a visual element, then optionally click it
 
-            self.steps = steps
-            self._update_steps_display()
-            messagebox.showinfo('Success', f"Loaded macro: {data.get('name', Path(path).stem)}")
-        # Notebook for Steps / Logs
-        steps_notebook = ttk.Notebook(main_frame)
-        steps_notebook.pack(fill="both", expand=True, pady=(0, 10))
+    Loops (New)
+    - Global loop (Settings → Loop Count): sets how many times the entire macro repeats. Set 0 for infinite loops.
+    - Per-step loops: select steps and click 🔄 Set Loop to repeat only that subset (0 = infinite).
+    - Use per-step loops to repeat small sequences within a larger macro without looping the whole script.
 
-        steps_tab = ttk.Frame(steps_notebook)
-        logs_tab = ttk.Frame(steps_notebook)
-        steps_notebook.add(steps_tab, text="Steps")
-        steps_notebook.add(logs_tab, text="Logs")
+    QuickRec (Recorder)
+    - Start/stop recording with the Record hotkey (default F7) or the 🎥 QuickRec button.
+    - QuickRec captures mouse and keyboard events and converts them into editable steps. It will try to convert press→move→release into a single Drag step when appropriate.
+    - Review recorded steps before saving — edit coordinates, delays, or types as needed.
 
-        # Steps listbox with scrollbar (inside Steps tab)
-        list_frame = ttk.Frame(steps_tab)
-        list_frame.pack(fill="both", expand=True)
+    Image Search Tips
+    - Capture tight, clear samples of the target element. Test confidence values (start at 0.80) and adjust if needed.
+    - Use a finite timeout (10–30s) for predictable behavior; 0 waits forever and may hang the macro.
 
-        # Vertical scrollbar
-        scrollbar_y = ttk.Scrollbar(list_frame, orient="vertical")
-        scrollbar_y.pack(side="right", fill="y")
+    Drag & Reorder Steps
+    - Reorder steps by selecting one or more items (Ctrl/Shift) and dragging them in the list.
+    - New Step supports a Drag action: provide start/end coordinates and a duration to play a smooth drag.
 
-        # Horizontal scrollbar
-        scrollbar_x = ttk.Scrollbar(list_frame, orient="horizontal")
-        scrollbar_x.pack(side="bottom", fill="x")
+    Hotkeys & Window Behavior
+    - Play: F6 (default) — Start/stop playback.
+    - Record: F7 (default) — Start/stop QuickRec.
+    - Global hotkeys work even when the app is minimized.
+    - The app enforces Always-On-Top to help with coordinate selection and quick controls.
 
-        self.steps_listbox = tk.Listbox(
-            list_frame,
-            font=("Courier", 10),
-            yscrollcommand=scrollbar_y.set,
-            xscrollcommand=scrollbar_x.set,
-            height=15,
-            selectmode=tk.EXTENDED,  # Enable multi-select with Ctrl/Shift
-            exportselection=False
-        )
-        self.steps_listbox.pack(side="left", fill="both", expand=True)
-        scrollbar_y.config(command=self.steps_listbox.yview)
-        scrollbar_x.config(command=self.steps_listbox.xview)
+    Missing / Planned Features
+    - Improved visual preview for drag paths.
+    - richer conditional logic (if/else) and branching steps.
+    - Import/export presets for common sequences.
+    - Better multi-monitor coordinate mapping UI (coming soon).
 
-        # Logs tab: scrolled text
-        self.logs_text = scrolledtext.ScrolledText(logs_tab, height=12, state='disabled', wrap='word', font=("Consolas", 10))
-        self.logs_text.pack(fill="both", expand=True, padx=6, pady=6)
+    Examples
+    - Click a button every 10s (3 times): Click at coordinates → Delay 10.0 → Set loop count 3.
+    - Wait for 'Ready' image then click: Image Search (small crop), confidence 0.85, timeout 20s, Click when found.
+    - Type into a field: Type 'Hello, world!' → Delay 0.5.
 
-        # Helper to log messages (timestamped)
-        def _log(msg):
-            try:
-                ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                self.logs_text.config(state='normal')
-                self.logs_text.insert('end', f"[{ts}] {msg}\n")
-                self.logs_text.see('end')
-                self.logs_text.config(state='disabled')
-            except Exception:
-                pass
+    Troubleshooting
+    - Wrong coordinates: re-capture with the picker and increase delay.
+    - Image Search fails: capture a clearer sample, lower confidence, or broaden timeout.
+    - No notifications: verify webhook URL and destination service.
 
-        self._log = _log
-        
+    Where to get help
+    - Use the Logs tab to see recordings and playback traces.
+    - Save and share your macro (JSON) with a support contact if you need help diagnosing an issue.
+
+    Final notes
+    - Start small, iterate, and keep backups of important macros.
+    - Respect privacy and app/game rules when automating actions.
+
+    New Features (Recent)
+    - Drag & Reorder Steps: multi-select + drag to reorder.
+    - Drag Steps: author drag actions with start/end coordinates and duration.
+    - QuickRec Drag Recognition: press→move→release is converted to a Drag step where appropriate.
+    - Global hotkeys while minimized and Always-On-Top enforced for easier control.
+
+    If you have feature requests or find bugs, please save the macro and share it with a short description.
+
+    """
+        # Main content frame
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill="both", expand=True)
+
         # Button frame - Row 1 (Step management)
         button_frame1 = ttk.Frame(main_frame)
         button_frame1.pack(fill="x", pady=(10, 5))
-        
+
         # New Step button
         self.new_step_btn = ttk.Button(
             button_frame1,
@@ -157,7 +157,7 @@ class SimpleMacroGUI:
             command=self._new_step_dialog
         )
         self.new_step_btn.pack(side="left", padx=5)
-        
+
         # Delete Step button
         self.delete_step_btn = ttk.Button(
             button_frame1,
@@ -165,7 +165,7 @@ class SimpleMacroGUI:
             command=self._delete_step
         )
         self.delete_step_btn.pack(side="left", padx=5)
-        
+
         # Step Options button
         self.step_options_btn = ttk.Button(
             button_frame1,
@@ -173,7 +173,7 @@ class SimpleMacroGUI:
             command=self._edit_step_options
         )
         self.step_options_btn.pack(side="left", padx=5)
-        
+
         # Set Loop button (for multi-select)
         self.set_loop_btn = ttk.Button(
             button_frame1,
@@ -181,7 +181,7 @@ class SimpleMacroGUI:
             command=self._set_selected_loops
         )
         self.set_loop_btn.pack(side="left", padx=5)
-        
+
         # Clear All button
         self.clear_btn = ttk.Button(
             button_frame1,
@@ -268,6 +268,11 @@ class SimpleMacroGUI:
             padding=(10, 5)
         )
         self.status_label.pack(fill="x")
+        # Start global hotkey listener so F6/F7 work even when minimized
+        try:
+            self._start_hotkey_listener()
+        except Exception:
+            pass
     
     def _new_step_dialog(self):
         """Open dialog to create a new step"""
@@ -325,6 +330,7 @@ class SimpleMacroGUI:
         
         ttk.Radiobutton(action_frame, text="Click", variable=action_var, value="click").pack(side="left", padx=10)
         ttk.Radiobutton(action_frame, text="Hold", variable=action_var, value="hold").pack(side="left", padx=10)
+        ttk.Radiobutton(action_frame, text="Drag", variable=action_var, value="drag").pack(side="left", padx=10)
         ttk.Radiobutton(action_frame, text="Type", variable=action_var, value="type").pack(side="left", padx=10)
         ttk.Radiobutton(action_frame, text="Scroll", variable=action_var, value="scroll").pack(side="left", padx=10)
         
@@ -367,10 +373,10 @@ class SimpleMacroGUI:
                  font=("Arial", 8))
         scroll_hint.pack(anchor="w", pady=(0, 15))
         
-        # Coordinates section (for mouse clicks)
+        # Coordinates section (for mouse clicks / drag start)
         coord_container = ttk.Frame(main_frame)
         
-        coord_label = ttk.Label(coord_container, text="Coordinates (X, Y):", font=("Arial", 11, "bold"))
+        coord_label = ttk.Label(coord_container, text="Start Coordinates (X, Y):", font=("Arial", 11, "bold"))
         
         x_var = tk.StringVar(value="0")
         y_var = tk.StringVar(value="0")
@@ -381,11 +387,27 @@ class SimpleMacroGUI:
         y_label = ttk.Label(coord_entry_frame, text="Y:", font=("Arial", 10))
         y_entry = ttk.Entry(coord_entry_frame, textvariable=y_var, font=("Arial", 10), width=8)
         
-        # Select Coordinates button
+        # Select Start Coordinates button
         select_coord_btn = ttk.Button(
             coord_container,
-            text="📍 Select Coordinates",
+            text="📍 Select Start Coordinates",
             command=lambda: self._open_coordinate_picker(x_var, y_var, dialog)
+        )
+
+        # End coordinates (for drag)
+        end_coord_container = ttk.Frame(main_frame)
+        end_coord_label = ttk.Label(end_coord_container, text="End Coordinates (X, Y):", font=("Arial", 11, "bold"))
+        end_x_var = tk.StringVar(value="0")
+        end_y_var = tk.StringVar(value="0")
+        end_coord_entry_frame = ttk.Frame(end_coord_container)
+        end_x_label = ttk.Label(end_coord_entry_frame, text="X:", font=("Arial", 10))
+        end_x_entry = ttk.Entry(end_coord_entry_frame, textvariable=end_x_var, font=("Arial", 10), width=8)
+        end_y_label = ttk.Label(end_coord_entry_frame, text="Y:", font=("Arial", 10))
+        end_y_entry = ttk.Entry(end_coord_entry_frame, textvariable=end_y_var, font=("Arial", 10), width=8)
+        select_end_coord_btn = ttk.Button(
+            end_coord_container,
+            text="📍 Select End Coordinates",
+            command=lambda: self._open_coordinate_picker(end_x_var, end_y_var, dialog)
         )
         
         # Amount/Duration section
@@ -407,6 +429,7 @@ class SimpleMacroGUI:
                 scroll_section.pack_forget()
                 coord_container.pack_forget()
                 amount_container.pack_forget()
+                end_coord_container.pack_forget()
             elif action == "scroll":
                 key_section.pack_forget()
                 text_section.pack_forget()
@@ -427,7 +450,7 @@ class SimpleMacroGUI:
                 key_section.pack(anchor="w", fill="x", pady=(0, 10))
                 
                 # Show coordinates if mouse click
-                if 'click' in key:
+                if 'click' in key or action == 'drag':
                     coord_container.pack(anchor="w", fill="x", pady=(0, 10))
                     coord_label.pack(anchor="w", pady=(0, 5))
                     coord_entry_frame.pack(anchor="w", pady=(0, 5))
@@ -436,6 +459,16 @@ class SimpleMacroGUI:
                     y_label.pack(side="left")
                     y_entry.pack(side="left", padx=5)
                     select_coord_btn.pack(anchor="w", pady=(5, 10))
+                    # Show end coordinate controls for drag
+                    if action == 'drag':
+                        end_coord_container.pack(anchor="w", fill="x", pady=(0, 10))
+                        end_coord_label.pack(anchor="w", pady=(0, 5))
+                        end_coord_entry_frame.pack(anchor="w", pady=(0, 5))
+                        end_x_label.pack(side="left")
+                        end_x_entry.pack(side="left", padx=(5, 10))
+                        end_y_label.pack(side="left")
+                        end_y_entry.pack(side="left", padx=5)
+                        select_end_coord_btn.pack(anchor="w", pady=(5, 10))
                 else:
                     coord_container.pack_forget()
                     coord_label.pack_forget()
@@ -445,6 +478,7 @@ class SimpleMacroGUI:
                     y_label.pack_forget()
                     y_entry.pack_forget()
                     select_coord_btn.pack_forget()
+                    end_coord_container.pack_forget()
                 
                 # Show amount/duration
                 amount_container.pack(anchor="w", fill="x", pady=(0, 10))
@@ -456,6 +490,10 @@ class SimpleMacroGUI:
                     amount_label.config(text="Duration (seconds):")
                     if amount_var.get() == "1":
                         amount_var.set("1.0")
+                elif action == 'drag':
+                    amount_label.config(text="Duration (seconds):")
+                    if amount_var.get() == "1":
+                        amount_var.set("0.5")
                 else:
                     amount_label.config(text="Amount (clicks):")
                     if amount_var.get() == "1.0":
@@ -551,6 +589,29 @@ class SimpleMacroGUI:
                     except ValueError:
                         messagebox.showerror("Error", "Coordinates must be numbers!")
                         return
+            if action == 'drag':
+                # Create drag step with start and end coordinates and duration
+                try:
+                    delay_value = float(delay_var.get())
+                    duration_value = float(amount_var.get())
+                    start_x = int(x_var.get())
+                    start_y = int(y_var.get())
+                    end_x = int(end_x_var.get())
+                    end_y = int(end_y_var.get())
+                except ValueError:
+                    messagebox.showerror("Error", "Coordinates, duration and delay must be numbers!")
+                    return
+
+                step = {
+                    'action': 'drag',
+                    'start_x': start_x,
+                    'start_y': start_y,
+                    'end_x': end_x,
+                    'end_y': end_y,
+                    'duration': duration_value,
+                    'delay': delay_value,
+                    'name': name_var.get().strip()
+                }
             
             # Unbind mousewheel when closing
             canvas.unbind_all("<MouseWheel>")
@@ -807,13 +868,104 @@ class SimpleMacroGUI:
                 direction = "up" if scroll_amount > 0 else "down"
                 text = f"{i}. {name_prefix}Scroll {direction} {abs(scroll_amount)}{coord_text}{step_opts}  [Delay: {step['delay']}s]"
             elif step['action'] == 'click':
-                text = f"{i}. {name_prefix}Click '{step['key']}'{coord_text} x{int(step['amount'])} times{step_opts}  [Delay: {step['delay']}s]"
+                text = f"{i}. {name_prefix}Click '{step.get('key','mouse')}'{coord_text} x{int(step.get('amount',1))} times{step_opts}  [Delay: {step.get('delay',0)}s]"
+            elif step['action'] == 'drag':
+                # Display drag with start/end coords and duration
+                sx = step.get('start_x', step.get('x', 0))
+                sy = step.get('start_y', step.get('y', 0))
+                ex = step.get('end_x', sx)
+                ey = step.get('end_y', sy)
+                dur = step.get('duration', 0.0)
+                text = f"{i}. {name_prefix}Drag from ({sx}, {sy}) to ({ex}, {ey}) for {dur}s{step_opts}  [Delay: {step.get('delay',0)}s]"
+            elif step['action'] == 'hold':
+                text = f"{i}. {name_prefix}Hold '{step.get('key','')}'{coord_text} for {step.get('amount',0)}s{step_opts}  [Delay: {step.get('delay',0)}s]"
             else:
-                text = f"{i}. {name_prefix}Hold '{step['key']}'{coord_text} for {step['amount']}s{step_opts}  [Delay: {step['delay']}s]"
+                # Generic fallback for unknown actions to avoid crashes
+                text = f"{i}. {name_prefix}{step.get('action','UNKNOWN').upper()}{coord_text}{step_opts}  [Delay: {step.get('delay',0)}s]"
             
             self.steps_listbox.insert(tk.END, text)
         
         self.status_label.config(text=f"Total steps: {len(self.steps)}")
+
+    # --- Drag & drop handlers for steps reordering ---
+    def _on_steps_listbox_button_press(self, event):
+        lb = event.widget
+        try:
+            idx = lb.nearest(event.y)
+        except Exception:
+            return
+        if idx < 0:
+            return
+        sel = lb.curselection()
+        # If clicked on an already-selected item, drag all selected; otherwise drag the clicked item
+        if sel and idx in sel:
+            self._drag_selection = list(sel)
+        else:
+            self._drag_selection = [idx]
+            lb.selection_clear(0, tk.END)
+            lb.selection_set(idx)
+        self._drag_start_index = idx
+
+    def _on_steps_listbox_motion(self, event):
+        lb = event.widget
+        try:
+            idx = lb.nearest(event.y)
+        except Exception:
+            return
+        if idx < 0:
+            return
+        # Give visual feedback by activating the nearest item
+        try:
+            lb.activate(idx)
+        except Exception:
+            pass
+
+    def _on_steps_listbox_button_release(self, event):
+        lb = event.widget
+        try:
+            target = lb.nearest(event.y)
+        except Exception:
+            target = None
+        if target is None or target < 0:
+            self._drag_start_index = None
+            self._drag_selection = None
+            return
+
+        src_indices = sorted(self._drag_selection) if self._drag_selection else []
+        if not src_indices:
+            return
+
+        # Work on a snapshot of original steps
+        orig = list(self.steps)
+        to_move = [orig[i] for i in src_indices]
+        remaining = [s for i, s in enumerate(orig) if i not in src_indices]
+
+        # Compute insertion position in the 'remaining' list corresponding to the release target
+        insertion_pos = 0
+        for i in range(0, target):
+            if i not in src_indices:
+                insertion_pos += 1
+
+        # If dropping after the original block, insert after the target
+        if target > max(src_indices):
+            insertion_pos += 1
+
+        if insertion_pos < 0:
+            insertion_pos = 0
+        if insertion_pos > len(remaining):
+            insertion_pos = len(remaining)
+
+        # Build new steps list and update UI
+        self.steps = remaining[:insertion_pos] + to_move + remaining[insertion_pos:]
+        self._update_steps_display()
+
+        # Restore selection to moved items
+        lb.selection_clear(0, tk.END)
+        for i in range(insertion_pos, insertion_pos + len(to_move)):
+            lb.selection_set(i)
+
+        self._drag_start_index = None
+        self._drag_selection = None
     
     def _delete_step(self):
         """Delete selected step"""
@@ -1190,17 +1342,7 @@ class SimpleMacroGUI:
                  font=("Arial", 8)).pack(anchor="w", pady=(5, 0))
         
         # Always on top option
-        top_frame = ttk.Frame(frame)
-        top_frame.pack(fill="x", pady=10)
-        
-        always_on_top_var = tk.BooleanVar(value=self.always_on_top)
-        
-        def toggle_always_on_top():
-            self.always_on_top = always_on_top_var.get()
-            self.root.attributes('-topmost', self.always_on_top)
-        
-        ttk.Checkbutton(top_frame, text="📌 Always on Top", variable=always_on_top_var,
-                       command=toggle_always_on_top).pack(anchor="w")
+        # (Always-on-top is enforced by default; setting removed)
         
         # Loop count
         loop_frame = ttk.Frame(frame)
@@ -1357,6 +1499,11 @@ class SimpleMacroGUI:
             "- Use '📍 Select Coordinates' to pick precise screen positions. The picker shows live screen coordinates.\n"
             "- Save macros with '💾 Save' and load them with '📂 Load'. Saved files are standard JSON and can be shared.\n"
             "\n"
+            "Save:\n"
+            "- Saved files and images are stored in C:\\Users\\(Your username)\\Documents\n"
+            "- Macros saved with '💾 Save' write JSON/text files to your Documents folder by default; images used for Image Search are saved to Documents\\SimpleMacro_Images.\n"
+            "\n"
+            "\n"
             "Core Concepts (Steps & Playback):\n"
             "- Steps are executed in order. Each step supports a small delay after it finishes — use this to wait for UI updates.\n"
             "- Step types: Click (single/multiple clicks), Hold (press-and-hold for seconds), Type (send text), Scroll, and Image Search (wait for image).\n"
@@ -1403,6 +1550,29 @@ class SimpleMacroGUI:
             "- Example 2 — Wait for a 'Ready' image then click: Add Image Search step with small crop of 'Ready' indicator, confidence 0.85, timeout 20s, Click when found.\n"
             "- Example 3 — Type text into a field: Add Step → Type → text: 'Hello, world!' → Delay 0.5.\n"
             "\n"
+            "Step Examples (JSON-like):\n"
+            "- Click step:\n"
+            "  { 'action': 'click', 'key': 'left_click', 'x': 123, 'y': 456, 'amount': 1, 'delay': 0.5 }\n"
+            "\n"
+            "- Hold step (press-and-hold):\n"
+            "  { 'action': 'hold', 'key': 'left_click', 'x': 200, 'y': 300, 'amount': 1.2, 'delay': 0.2 }\n"
+            "\n"
+            "- Drag step (author or QuickRec-converted):\n"
+            "  { 'action': 'drag', 'start_x': 120, 'start_y': 220, 'end_x': 420, 'end_y': 220, 'duration': 0.6, 'delay': 0.1 }\n"
+            "\n"
+            "- Type step:\n"
+            "  { 'action': 'type', 'text': 'Hello, world!', 'delay': 0.5 }\n"
+            "\n"
+            "- Scroll step:\n"
+            "  { 'action': 'scroll', 'scroll_amount': -3, 'x': 400, 'y': 300, 'delay': 0.2 }\n"
+            "\n"
+            "- Image Search step (wait for image then click):\n"
+            "  { 'action': 'image_search', 'image_name': 'ready.png', 'confidence': 0.85, 'search_timeout': 20, 'click_image': True, 'delay': 0.2 }\n"
+            "\n"
+            "- Example QuickRec output for a recorded drag (converted):\n"
+            "  When you press, move, and release, QuickRec will usually produce a converted Drag step similar to:\n"
+            "  { 'action': 'drag', 'start_x': 150, 'start_y': 250, 'end_x': 350, 'end_y': 260, 'duration': 0.45, 'delay': 0.05 }\n"
+            "\n"
             "Advanced Tips (User-level, optional):\n"
             "- Use per-step speed multipliers for tiny timing tweaks instead of changing the global speed.\n"
             "- Use per-step loops to repeat a subset of steps without looping the whole macro.\n"
@@ -1415,6 +1585,29 @@ class SimpleMacroGUI:
             "Final Notes:\n"
             "- Start small, iterate, and keep backups of macros you care about.\n"
             "- The app is intended to help automate routine tasks — keep safety and privacy in mind.\n"
+            "\n"
+            "New Features (Recent Updates):\n"
+            "- Drag & Reorder Steps: You can now drag one or more selected steps in the Steps list to reorder them.\n"
+            "  • Select multiple steps with Ctrl/Shift, then click+drag any selected item to move the whole selection.\n"
+            "  • Use this to quickly reorganize complex macros without deleting and re-adding steps.\n"
+            "\n"
+            "- Drag Steps (Mouse Drag Actions): The New Step dialog supports a new 'Drag' action.\n"
+            "  • Create precise drag actions by specifying start (X,Y), end (X,Y), and duration (seconds).\n+            "
+            "  • Drag steps are played back as a smooth press->move->release over the specified duration.\n"
+            "\n"
+            "- QuickRec Drag Recognition: QuickRec attempts to detect press->move->release sequences and converts them into a single 'drag' step.\n"
+            "  • When you record a mouse press, move, then release, the recorder will create a Drag step with inferred start/end coordinates and duration.\n"
+            "  • After recording, review and adjust the generated Drag step (coordinates and duration) before saving.\n"
+            "\n"
+            "- Global Hotkeys While Minimized: Global hotkeys (default F6 to Play, F7 to Record) run even when the app is minimized.\n"
+            "  • Press the hotkey once to start and again to stop recording/playback.\n"
+            "\n"
+            "- Always On Top: The UI is now enforced to stay on top to make coordinate selection and quick controls more convenient.\n"
+            "  • This behavior is enabled by default; the option was removed from Settings to reduce accidental toggles.\n"
+            "\n"
+            "- Small Window Compatibility: The app minimum size was reduced for better usability on small displays. If widgets overlap, try resizing the window slightly to allow layouts to reflow.\n"
+            "\n"
+            
         )
 
         text.insert("1.0", guide)
@@ -2123,7 +2316,12 @@ class SimpleMacroGUI:
         try:
             # Take screenshot
             with mss.mss() as sct:
-                monitor = sct.monitors[1]  # Primary monitor
+                # Prefer primary monitor if available, otherwise fall back to the first available
+                try:
+                    monitor = sct.monitors[1]
+                except Exception:
+                    # Some environments may only expose monitors[0]
+                    monitor = sct.monitors[0]
                 screenshot = sct.grab(monitor)
                 screen_img = np.array(screenshot)
                 screen_img = cv2.cvtColor(screen_img, cv2.COLOR_BGRA2BGR)
@@ -2451,43 +2649,98 @@ class SimpleMacroGUI:
             
             if event['type'] == 'mouse_click':
                 if event['pressed']:
-                    # Look for the release to determine if it's a click or hold
+                    # Look for the release to determine if it's a click, hold, or drag
                     release_event = None
+                    last_move = None
+                    release_index = None
                     for j in range(i + 1, len(events)):
+                        if events[j]['type'] == 'mouse_move':
+                            last_move = events[j]
                         if (events[j]['type'] == 'mouse_click' and 
                             events[j]['button'] == event['button'] and 
                             not events[j]['pressed']):
                             release_event = events[j]
+                            release_index = j
                             break
-                    
+
                     if release_event:
                         hold_duration = release_event['timestamp'] - event['timestamp']
-                        
-                        if hold_duration > 0.3:  # Considered a hold if > 300ms
+
+                        # Collect all mouse_move events between press and release
+                        moves = []
+                        for k in range(i + 1, release_index):
+                            if events[k]['type'] == 'mouse_move':
+                                moves.append(events[k])
+
+                        # Prefer release coords as end; fallback to last move if available
+                        start_x = event.get('x', 0)
+                        start_y = event.get('y', 0)
+                        end_x = release_event.get('x', None)
+                        end_y = release_event.get('y', None)
+                        if end_x is None or end_y is None:
+                            if moves:
+                                end_x = moves[-1].get('x')
+                                end_y = moves[-1].get('y')
+                            else:
+                                end_x = start_x
+                                end_y = start_y
+
+                        # Movement threshold (pixels) to qualify as a drag
+                        try:
+                            dx = int(end_x) - int(start_x)
+                            dy = int(end_y) - int(start_y)
+                            dist_sq = dx * dx + dy * dy
+                        except Exception:
+                            dist_sq = 0
+
+                        DRAG_THRESHOLD_SQ = 25  # 5 pixels squared
+
+                        # If there was movement while the button was down, it's a drag
+                        if (moves or dist_sq >= DRAG_THRESHOLD_SQ) and hold_duration > 0.05:
                             step_item = {
-                                'action': 'hold',
-                                'key': event['button'],
-                                'x': event['x'],
-                                'y': event['y'],
-                                'amount': round(hold_duration, 2),
+                                'action': 'drag',
+                                'start_x': int(start_x),
+                                'start_y': int(start_y),
+                                'end_x': int(end_x),
+                                'end_y': int(end_y),
+                                'duration': round(hold_duration, 2),
                                 'delay': delay
                             }
                         else:
-                            step_item = {
-                                'action': 'click',
-                                'key': event['button'],
-                                'x': event['x'],
-                                'y': event['y'],
-                                'amount': 1,
-                                'delay': delay
-                            }
+                            # No significant movement — decide between click vs hold
+                            if hold_duration > 0.3:  # Considered a hold if > 300ms
+                                step_item = {
+                                    'action': 'hold',
+                                    'key': event['button'],
+                                    'x': event['x'],
+                                    'y': event['y'],
+                                    'amount': round(hold_duration, 2),
+                                    'delay': delay
+                                }
+                            else:
+                                step_item = {
+                                    'action': 'click',
+                                    'key': event['button'],
+                                    'x': event['x'],
+                                    'y': event['y'],
+                                    'amount': 1,
+                                    'delay': delay
+                                }
                         new_steps.append(step_item)
                         try:
                             self._log(f"Converted event -> step: {step_item}")
                         except Exception:
                             pass
-                    
-                    last_timestamp = event['timestamp']
+
+                        # Advance the index past the release event so we don't double-convert
+                        if release_index is not None:
+                            last_timestamp = release_event['timestamp']
+                            i = release_index
+                            # continue from release_index+1 when loop increments
+                            
+                    else:
+                        # No matching release found; ignore or treat as single press (skip)
+                        last_timestamp = event['timestamp']
             
             elif event['type'] == 'key_press':
                 key = event['key']

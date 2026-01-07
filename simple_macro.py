@@ -161,6 +161,14 @@ class SimpleMacroGUI:
             command=self._open_settings
         )
         self.settings_btn.pack(side="left", padx=5)
+
+        # Guide button - opens comprehensive help
+        self.guide_btn = ttk.Button(
+            button_frame2,
+            text="📘 Guide",
+            command=self._open_guide
+        )
+        self.guide_btn.pack(side="left", padx=5)
         
         # Action buttons frame
         action_frame = ttk.Frame(main_frame)
@@ -202,6 +210,41 @@ class SimpleMacroGUI:
             padding=(10, 5)
         )
         self.status_label.pack(fill="x")
+
+    def _setup_styles(self):
+        """Configure app-wide ttk styles and fonts for a cleaner modern UI."""
+        try:
+            default_font = ("Segoe UI", 10)
+            heading_font = ("Segoe UI", 12, "bold")
+
+            style = ttk.Style()
+            # Base font for ttk widgets
+            style.configure('.', font=default_font)
+
+            # Accent button for primary actions
+            style.configure('Accent.TButton', font=default_font, padding=8)
+            style.map('Accent.TButton', background=[('active', '#006bb3'), ('!disabled', '#0080ff')])
+
+            # Make listbox look monospaced and comfortable
+            try:
+                self.steps_listbox.config(font=("Consolas", 10))
+            except Exception:
+                pass
+
+            # Slightly larger title if present
+            try:
+                for child in self.root.winfo_children():
+                    if isinstance(child, ttk.Frame):
+                        for w in child.winfo_children():
+                            if getattr(w, 'cget', None) and w.cget('text') == 'Simple Macro':
+                                try:
+                                    w.config(font=heading_font)
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+        except Exception:
+            pass
     
     def _new_step_dialog(self):
         """Open dialog to create a new step"""
@@ -1203,9 +1246,10 @@ class SimpleMacroGUI:
     
     def _apply_theme(self, theme_name):
         """Apply a theme to the application"""
+        # Persist selection
         self.current_theme = theme_name
-        
-        # Theme color definitions
+
+        # Theme color definitions (centralized for use across the app)
         themes = {
             "dark": {
                 "bg": "#1c1c1c",
@@ -1268,69 +1312,134 @@ class SimpleMacroGUI:
                 "use_sv_ttk": "dark"
             }
         }
-        
-        # Get theme colors (default to dark if not found)
+
+        # Resolve theme and fallback to dark
         theme = themes.get(theme_name, themes["dark"])
-        
-        # Apply Sun Valley base theme first
-        if theme["use_sv_ttk"] == "light":
-            sv_ttk.use_light_theme()
-        else:
-            sv_ttk.use_dark_theme()
-        
-        # Force update to apply sv_ttk changes
-        self.root.update_idletasks()
-        
+
+        # Apply Sun Valley base theme if available
+        try:
+            if theme["use_sv_ttk"] == "light":
+                sv_ttk.use_light_theme()
+            else:
+                sv_ttk.use_dark_theme()
+        except Exception:
+            # sv_ttk may not be available; ignore and continue with custom colors
+            pass
+
+        # Force update to apply changes
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
         # Apply custom colors on top
-        self.root.configure(bg=theme["bg"])
-        
-        # Configure ttk styles with custom colors
+        try:
+            self.root.configure(bg=theme["bg"])
+        except Exception:
+            pass
+
         style = ttk.Style()
-        
-        # Override all frame backgrounds
-        style.configure("TFrame", background=theme["bg"])
-        style.configure("TLabel", background=theme["bg"], foreground=theme["fg"])
-        style.configure("TLabelframe", background=theme["bg"], bordercolor=theme["accent"])
-        style.configure("TLabelframe.Label", background=theme["bg"], foreground=theme["fg"])
-        
-        # Button styling
-        style.configure("TButton", background=theme["accent"], foreground=theme["fg"])
-        style.map("TButton", 
-                  background=[("active", theme["select_bg"]), ("pressed", theme["select_bg"])],
-                  foreground=[("active", theme["select_fg"])])
-        
-        # Radiobutton and Checkbutton
-        style.configure("TRadiobutton", background=theme["bg"], foreground=theme["fg"])
-        style.configure("TCheckbutton", background=theme["bg"], foreground=theme["fg"])
-        
-        # Entry and Spinbox
-        style.configure("TEntry", fieldbackground=theme["listbox_bg"], foreground=theme["listbox_fg"])
-        style.configure("TSpinbox", fieldbackground=theme["listbox_bg"], foreground=theme["listbox_fg"])
-        
-        # Scrollbar
-        style.configure("TScrollbar", background=theme["accent"], troughcolor=theme["bg"])
-        
-        # Notebook (tabs)
-        style.configure("TNotebook", background=theme["bg"])
-        style.configure("TNotebook.Tab", background=theme["bg"], foreground=theme["fg"])
-        
-        # Scale/Slider
-        style.configure("TScale", background=theme["bg"], troughcolor=theme["listbox_bg"])
-        
-        # Listbox styling (tk widget, not ttk)
-        self.steps_listbox.configure(
-            bg=theme["listbox_bg"],
-            fg=theme["listbox_fg"],
-            selectbackground=theme["select_bg"],
-            selectforeground=theme["select_fg"],
-            highlightbackground=theme["accent"],
-            highlightcolor=theme["accent"]
-        )
-        
-        # Apply colors to all existing widgets recursively
-        self._apply_colors_to_children(self.root, theme)
-        
-        self.status_label.config(text=f"Theme: {theme_name.capitalize()} applied")
+
+        # Configure common ttk styles
+        try:
+            style.configure("TFrame", background=theme["bg"])
+            style.configure("TLabel", background=theme["bg"], foreground=theme["fg"])
+            style.configure("TLabelframe", background=theme["bg"], bordercolor=theme["accent"])
+            style.configure("TLabelframe.Label", background=theme["bg"], foreground=theme["fg"])
+            style.configure("TButton", background=theme["accent"], foreground=theme["fg"])
+            style.map("TButton",
+                      background=[("active", theme["select_bg"]), ("pressed", theme["select_bg"])],
+                      foreground=[("active", theme["select_fg"])])
+            style.configure("TRadiobutton", background=theme["bg"], foreground=theme["fg"])
+            style.configure("TCheckbutton", background=theme["bg"], foreground=theme["fg"])
+            style.configure("TEntry", fieldbackground=theme["listbox_bg"], foreground=theme["listbox_fg"])
+            style.configure("TSpinbox", fieldbackground=theme["listbox_bg"], foreground=theme["listbox_fg"])
+            style.configure("TScrollbar", background=theme["accent"], troughcolor=theme["bg"])
+            style.configure("TNotebook", background=theme["bg"])
+            style.configure("TNotebook.Tab", background=theme["bg"], foreground=theme["fg"])
+            style.configure("TScale", background=theme["bg"], troughcolor=theme["listbox_bg"])
+        except Exception:
+            pass
+
+        # Apply listbox (tk) styling
+        try:
+            self.steps_listbox.configure(
+                bg=theme["listbox_bg"],
+                fg=theme["listbox_fg"],
+                selectbackground=theme["select_bg"],
+                selectforeground=theme["select_fg"],
+                highlightbackground=theme["accent"],
+                highlightcolor=theme["accent"]
+            )
+        except Exception:
+            pass
+
+        # Apply colors recursively to widgets
+        try:
+            self._apply_colors_to_children(self.root, theme)
+        except Exception:
+            pass
+
+        # Update status
+        try:
+            self.status_label.config(text=f"Theme: {theme_name.capitalize()} applied")
+        except Exception:
+            pass
+
+    def _open_guide(self):
+        """Open a comprehensive user guide in a dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Simple Macro — Guide")
+        dialog.geometry("700x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Apply theme first so colors are available
+        theme_name = getattr(self, 'current_theme', 'dark')
+        self._apply_theme(theme_name)
+
+        text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, font=("Segoe UI", 10), relief="flat")
+        text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Read colors from widgets that were styled by _apply_theme
+        list_bg = self.steps_listbox.cget('bg') if hasattr(self, 'steps_listbox') else '#2d2d2d'
+        list_fg = self.steps_listbox.cget('fg') if hasattr(self, 'steps_listbox') else '#ffffff'
+        accent = self.steps_listbox.cget('highlightbackground') if hasattr(self, 'steps_listbox') else '#0078d4'
+
+        # Configure text widget colors
+        try:
+            text.configure(bg=list_bg, fg=list_fg, insertbackground=list_fg)
+        except Exception:
+            pass
+
+        # Define sections for nicer layout
+        sections = [
+            ("Overview", "Simple Macro is a step-based macro recorder and player for mouse/keyboard automation. Steps are atomic actions (click, hold, type, scroll, image_search, mouse_move, drag) that can be combined and looped."),
+            ("Quick Recording (QuickRec)", "Start/stop QuickRec with the Record hotkey (default F7). QuickRec records clicks, keys, scrolls and (optionally) mouse movements. Options: toggle recording of mouse moves, clicks, scroll, and keyboard input. QuickRec ignores inputs inside the app window so your UI interactions aren’t captured. Press the record hotkey again to finish; the captured events are converted into steps. Press/Move/Release sequences that meet the drag thresholds are converted into a single 'drag' step."),
+            ("Step Types and Options", "click, hold, type, scroll, mouse_move, drag, image_search. Each step supports configurable coordinates, delays, loop counts, and per-step speed multipliers."),
+            ("Managing Steps", "Add steps via 'New Step', edit with 'Edit Step Options', reorder by dragging in the steps list, multi-select for bulk edits, and use 'Set Loop Count' for repeats (0 = infinite)."),
+            ("Coordinate Picker & Drawing", "Use 'Select Coordinates' to pick exact screen coordinates from a fullscreen screenshot. The picker shows live screen coordinates, supports left-click to pick, right-click+drag to draw annotations, Enter to confirm, Esc to cancel, and 'C' to clear drawings."),
+            ("Image Search & Item Detection", "Image Search steps use template matching (OpenCV) to find images on-screen. Configure confidence (0.0-1.0), search timeout (0 = wait forever), offsets, and click behavior. Manage items allows monitored images and webhook triggers on detection."),
+            ("Playback & Hotkeys", "Play/pause using Play hotkey (default F6). Press twice to stop immediately. Playback supports global loop counts and per-step repeats. Playback speed multiplier is available globally and per-step (0.1x-50x). Global hotkeys work while the app is minimized."),
+            ("Saving & Files", "Macros, settings, and captured images are saved under your Documents folder by default. Saved files and images are stored in: C:\\Users\\(Your username)\\Documents. Use the Save/Load controls to persist and restore macros."),
+            ("Webhooks & Notifications", "Configure webhooks to post screenshots or loop-complete notifications. Discord mentions can include a numeric user ID; the app formats mentions as <@ID> when allowed."),
+            ("Troubleshooting & Tips", "If coordinates are off on multi-monitor setups, use the coordinate picker (app records monitor offsets). If image search fails, increase confidence or use clearer templates. For reliable QuickRec drags, perform a continuous press→move→release to capture as a single 'drag' step.")
+        ]
+
+        # Insert sections with tags
+        text.config(state=tk.NORMAL)
+        for title, body in sections:
+            text.insert(tk.END, title + "\n", ('h1',))
+            text.insert(tk.END, body + "\n\n", ('body',))
+
+        # Configure tags
+        try:
+            text.tag_configure('h1', font=("Segoe UI", 12, 'bold'), foreground=accent, spacing1=6)
+            text.tag_configure('body', font=("Segoe UI", 10), lmargin1=6, lmargin2=6, spacing3=6)
+        except Exception:
+            pass
+
+        text.config(state=tk.DISABLED)
     
     def _apply_colors_to_children(self, parent, theme):
         """Recursively apply theme colors to all child widgets"""
